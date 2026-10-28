@@ -1,0 +1,92 @@
+
+services:
+  notebook:
+    build:
+      context: ./notebook
+    container_name: notebook
+    ports:
+      - "${JUPYTER_PORT:-8888}:8888"
+    environment:
+      JUPYTER_TOKEN: ${JUPYTER_TOKEN:?Set JUPYTER_TOKEN in .env}
+      SPARK_MASTER: spark://${SPARK_MASTER_HOST:-spark-master}:${SPARK_MASTER_PORT:-7077}
+      MINIO_ENDPOINT: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+    volumes:
+      - ./notebooks:/home/jovyan/work
+    depends_on:
+      - spark-master
+      - minio
+    networks:
+      - data-network
+    restart: unless-stopped
+
+  minio:
+    image: elestio/minio:latest
+    container_name: minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+    volumes:
+      - minio_data:/data
+    networks:
+      - data-network
+    restart: unless-stopped
+
+  spark-master:
+    build:
+      context: ./spark
+      args:
+        SPARK_VERSION: ${SPARK_VERSION:-3.5.1}
+        HADOOP_VERSION: ${HADOOP_VERSION:-3.3.4}
+        AWS_SDK_VERSION: ${AWS_SDK_VERSION:-1.12.262}
+    image: custom-spark:${SPARK_VERSION:-3.5.1}
+    container_name: spark-master
+    hostname: spark-master
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.master.Master
+      - --host
+      - spark-master
+      - --port
+      - "${SPARK_MASTER_PORT:-7077}"
+      - --webui-port
+      - "${SPARK_MASTER_UI_PORT:-8080}"
+    ports:
+      - "${SPARK_MASTER_PORT:-7077}:7077"
+      - "${SPARK_MASTER_UI_PORT:-8080}:8080"
+    networks:
+      - data-network
+    restart: unless-stopped
+
+  spark-worker:
+    image: custom-spark:${SPARK_VERSION:-3.5.1}
+    container_name: spark-worker
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.worker.Worker
+      - spark://spark-master:${SPARK_MASTER_PORT:-7077}
+      - --cores
+      - "${SPARK_WORKER_CORES:-4}"
+      - --memory
+      - "${SPARK_WORKER_MEMORY:-4g}"
+      - --webui-port
+      - "${SPARK_WORKER_UI_PORT:-8081}"
+    depends_on:
+      - spark-master
+    ports:
+      - "${SPARK_WORKER_UI_PORT:-8081}:8081"
+    networks:
+      - data-network
+    restart: unless-stopped
+
+networks:
+  data-network:
+    driver: bridge
+
+volumes:
+  minio_data:
